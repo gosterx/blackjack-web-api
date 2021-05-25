@@ -12,7 +12,7 @@ import doobie.util.transactor.Transactor
 trait UserRepository[F[_]] {
   def getUser(name: String): F[Either[UserError, User]]
   def createUser(user: UserParams): F[Either[UserError, User]]
-  def updateBalance(name: String, newBalance: Int): F[Either[UserError, User]]
+  def updateBalance(name: String, newBalance: Int): F[Unit]
 }
 
 object UserRepository {
@@ -42,20 +42,18 @@ object UserRepository {
           .transact(transactor)
       } yield userE
 
-    override def updateBalance(name: String, newBalance: Int): F[Either[UserError, User]] =
+    override def updateBalance(name: String, delta: Int): F[Unit] =
       for {
-        balance   <- if (newBalance >= 0) Monad[F].pure(newBalance)
-        else Sync[F].raiseError(UserError.NegativeBalance)
         userE     <- getUser(name)
-        user      <- userE match {
+        newBalance      <- userE match {
           case Left(_) => Sync[F].raiseError(UserError.UserNotFoundError)
-          case Right(value) => Monad[F].pure(User.of(value.id, value.name, balance))
+          case Right(value) => Monad[F].pure(value.balance + delta)
         }
-        _          <- sql"UPDATE users SET balance = ${balance.toString} WHERE name = $name"
+        _          <- sql"UPDATE users SET balance = ${newBalance.toString} WHERE name = $name"
           .update
           .run
           .transact(transactor)
-      } yield user
+      } yield ()
   })
 
 }
