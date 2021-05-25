@@ -165,16 +165,6 @@ object Game {
 
         } yield ()
 
-      def func(userName: String): F[Unit] =
-        for {
-          turnUser <- turn.get
-          _        <-
-            if (userName == turnUser.name)
-              for {
-
-              } yield ()
-        } yield ()
-
     }
   }
 
