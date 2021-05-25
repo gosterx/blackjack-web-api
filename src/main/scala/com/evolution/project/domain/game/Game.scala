@@ -6,6 +6,8 @@ import cats.syntax.all._
 import com.evolution.project.domain.deck.{Card, Rank, Suit}
 import com.evolution.project.domain.user.User
 import com.evolution.project.repository.UserRepository
+import com.evolution.project.domain.deck.Card._
+import com.evolution.project.effects.GenNumber
 
 import scala.util.Random
 
@@ -25,39 +27,6 @@ object Game {
 
   def of[F[_] : Sync](players: List[User], userRepository: UserRepository[F]): F[Game[F]] = {
 
-    def getCardsScore(cards: List[Card]): Int = {
-      val scores: Int = cards.map(getSingleCardScore).sum
-      if (scores > 21) {
-        val aceCount = cards.count(_.rank == Rank.Ace)
-        if (aceCount > 1) {
-          scores - 10 * (aceCount - 1)
-        } else if (aceCount == 1) {
-          scores - 10
-        } else {
-          scores
-        }
-      } else {
-        scores
-      }
-    }
-
-    def getSingleCardScore(card: Card): Int = {
-      card.rank match {
-        case Rank.Ace => 11
-        case Rank.Two => 2
-        case Rank.Three => 3
-        case Rank.Four => 4
-        case Rank.Five => 5
-        case Rank.Six => 6
-        case Rank.Seven => 7
-        case Rank.Eight => 8
-        case Rank.Nine => 9
-        case Rank.Ten => 10
-        case Rank.Jack => 10
-        case Rank.Queen => 10
-        case Rank.King => 10
-      }
-    }
 
     def getUserAfter(user: User): User = {
       val index = players.indexOf(user)
@@ -65,11 +34,6 @@ object Game {
       else players(index + 1)
     }
 
-    def initDeck: List[Card] =
-      for {
-        rank <- Rank.ranks
-        suit <- Suit.suits
-      } yield Card(rank, suit)
 
     def getRandomCard(deck: List[Card]): Card = deck(Random.nextInt(deck.length - 1))
 
@@ -88,10 +52,9 @@ object Game {
         for {
           turnUser <- turn.get
           _ <-
-            if (userName == turnUser.name) {
-              betState.update(map => map.updated(userName, bet)) *>
-                turn.update(getUserAfter)
-            } else Sync[F].pure()
+            if (userName == turnUser.name)
+              betState.update(_.updated(userName, bet)) *> turn.update(getUserAfter)
+            else Sync[F].pure()
           turnUser1 <- turn.get
           _ <-
             if (turnUser1.name == players.head.name) placeInitialCards *> placeDealerInitialCards
@@ -114,46 +77,45 @@ object Game {
       override def placeInitialCards: F[List[Unit]] =
         players.map(user => {
           for {
-            deck1 <- deck.get
-            firstCard <- Sync[F].delay(getRandomCard(deck1))
-            _ <- deck.update(_.filter(_ != firstCard))
-            deck2 <- deck.get
-            secondCard <- Sync[F].delay(getRandomCard(deck2))
-            _ <- deck.update(_.filter(_ != secondCard))
-            userState = UserGameState(List(firstCard, secondCard), getCardsScore(List(firstCard, secondCard)))
+            firstCard <- getCardFromDeck
+            secondCard <- getCardFromDeck
+            hand: List[Card] = List(firstCard, secondCard)
+            userState = UserGameState(hand, getCardsScore(hand))
             _ <- userGameState.update(map => map.updated(user.name, userState))
           } yield ()
         }).sequence
 
+      def getCardFromDeck: F[Card] =
+        for {
+          deckNow <- deck.get
+          number  <- GenNumber[F].random(deckNow.length)
+          card    <- Sync[F].delay(deckNow(number - 1))
+          _       <- deck.update(_.filter(_ != card))
+        } yield card
+
       def placeDealerInitialCards: F[Unit] =
         for {
-          deck1 <- deck.get
-          firstCard <- Sync[F].delay(getRandomCard(deck1))
-          _ <- deck.update(_.filter(_ != firstCard))
-          deck2 <- deck.get
-          secondCard <- Sync[F].delay(getRandomCard(deck2))
-          _ <- deck.update(_.filter(_ != secondCard))
-          dealerState = DealerGameState(List(firstCard, secondCard), getCardsScore(List(firstCard, secondCard)))
+          firstCard  <- getCardFromDeck
+          secondCard <- getCardFromDeck
+          hand: List[Card] = List(firstCard, secondCard)
+          dealerState = DealerGameState(hand, getCardsScore(hand))
           startDealerState = DealerGameState(List(firstCard), getCardsScore(List(firstCard)))
           _ <- dealerGameState.update(_ => dealerState)
           _ <- startDealerGameState.update(_ => startDealerState)
         } yield ()
 
-      def placeDealerFinishCards: F[Unit] = {
+      def placeDealerFinishCards: F[Unit] =
         for {
           dealerState <- dealerGameState.get
           _ <-
             if (dealerState.score < 16) {
               for {
-                deckNow <- deck.get
-                card <- Sync[F].delay(getRandomCard(deckNow))
-                _ <- deck.update(_.filter(_ != card))
+                card <- getCardFromDeck
                 _ <- dealerGameState.update(state => state.copy(cards = state.cards ::: List(card), score = getCardsScore(state.cards ::: List(card))))
                 _ <- placeDealerFinishCards
               } yield ()
             } else gameStatus.update(_ => 1)
         } yield ()
-      }
 
       def pullResults: F[Unit] = {
         for {
@@ -191,7 +153,7 @@ object Game {
               usersGameState.get(userName) match {
                 case Some(value) =>
                   val newCard = getRandomCard(deckNow)
-                  userGameState.update(map => map.updated(userName, value.copy(cards = value.cards ::: List(newCard), score = getCardsScore(value.cards ::: List(newCard))))) *>
+                  userGameState.update(_.updated(userName, value.copy(cards = value.cards ::: List(newCard), score = getCardsScore(value.cards ::: List(newCard))))) *>
                     deck.update(_.filter(_ != newCard)) *> {
                     if (getCardsScore(value.cards ::: List(newCard)) > 21) {
                       doResign(userName)
@@ -202,6 +164,7 @@ object Game {
             } else Sync[F].pure()
 
         } yield ()
+
     }
   }
 
