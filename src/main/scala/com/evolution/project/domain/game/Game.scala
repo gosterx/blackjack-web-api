@@ -21,6 +21,8 @@ trait Game[F[_]] {
   def doResign(userName: String): F[Unit]
 
   def doHit(userName: String): F[Unit]
+
+  def doReset: F[Unit]
 }
 
 object Game {
@@ -88,14 +90,14 @@ object Game {
       def getCardFromDeck: F[Card] =
         for {
           deckNow <- deck.get
-          number  <- GenNumber[F].random(deckNow.length)
-          card    <- Sync[F].delay(deckNow(number - 1))
-          _       <- deck.update(_.filter(_ != card))
+          number <- GenNumber[F].random(deckNow.length)
+          card <- Sync[F].delay(deckNow(number - 1))
+          _ <- deck.update(_.filter(_ != card))
         } yield card
 
       def placeDealerInitialCards: F[Unit] =
         for {
-          firstCard  <- getCardFromDeck
+          firstCard <- getCardFromDeck
           secondCard <- getCardFromDeck
           hand: List[Card] = List(firstCard, secondCard)
           dealerState = DealerGameState(hand, getCardsScore(hand))
@@ -121,11 +123,14 @@ object Game {
         for {
           usersGameState <- userGameState.get
           dealerState <- dealerGameState.get
+          bets <- betState.get
           _ <- usersGameState.map(state =>
             if ((state._2.score <= 21 && dealerState.score > 21) || (state._2.score <= 21 && dealerState.score <= 21 && state._2.score > dealerState.score)) {
-              result.update(_.updated(state._1, GameResult.Win))
+              userRepository.updateBalance(state._1, bets(state._1)) *>
+                result.update(_.updated(state._1, GameResult.Win))
             } else if ((state._2.score > 21 && dealerState.score <= 21) || (state._2.score <= 21 && dealerState.score <= 21 && state._2.score < dealerState.score)) {
-              result.update(_.updated(state._1, GameResult.Lose))
+              userRepository.updateBalance(state._1, -bets(state._1)) *>
+                result.update(_.updated(state._1, GameResult.Lose))
             } else result.update(_.updated(state._1, GameResult.Draw))
           ).toList.sequence
         } yield ()
@@ -147,24 +152,32 @@ object Game {
         for {
           turnUser <- turn.get
           usersGameState <- userGameState.get
-          deckNow <- deck.get
           _ <-
             if (userName == turnUser.name) {
               usersGameState.get(userName) match {
                 case Some(value) =>
-                  val newCard = getRandomCard(deckNow)
-                  userGameState.update(_.updated(userName, value.copy(cards = value.cards ::: List(newCard), score = getCardsScore(value.cards ::: List(newCard))))) *>
-                    deck.update(_.filter(_ != newCard)) *> {
-                    if (getCardsScore(value.cards ::: List(newCard)) > 21) {
-                      doResign(userName)
-                    } else Sync[F].pure()
-                  }
+                  for {
+                    newCard <- getCardFromDeck
+                    _    <- userGameState.update(_.updated(userName, value.copy(cards = value.cards ::: List(newCard), score = getCardsScore(value.cards ::: List(newCard)))))
+                    _    <- if (getCardsScore(value.cards ::: List(newCard)) > 21) doResign(userName)
+                            else Sync[F].pure()
+                  } yield ()
                 case None => Sync[F].pure()
               }
             } else Sync[F].pure()
-
         } yield ()
 
+      override def doReset: F[Unit] =
+        for {
+          _ <- gameStatus.update(_ => 0)
+          _ <- result.update(_ => Map.empty[String, GameResult])
+          _ <- deck.update(_ => initDeck)
+          _ <- turn.update(_ => players.head)
+          _ <- betState.update(_ => Map.empty[String, Int])
+          _ <- startDealerGameState.update(_ => DealerGameState(Nil, 0))
+          _ <- dealerGameState.update(_ =>  DealerGameState(Nil, 0))
+          _ <- userGameState.update(_ => Map.empty[String, UserGameState])
+        } yield ()
     }
   }
 

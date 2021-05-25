@@ -14,12 +14,17 @@ object GameRouter {
 
       case GET -> Root / tableName / "game" =>
         for {
-          _            <- IO(println(tableName))
           game         <- gameService.getGameByTableName(tableName)
           gameState    <- game.getGameState
-          _            <- IO(println(gameState))
           response     <- Ok(gameState)
         } yield response
+
+      case POST -> Root / tableName / "game" / "reset" =>
+        for {
+          game <- gameService.getGameByTableName(tableName)
+          response <- game.doReset *> Ok()
+        } yield response
+
     }
   }
 
